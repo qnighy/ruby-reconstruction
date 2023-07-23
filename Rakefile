@@ -56,6 +56,7 @@ ARCHIVED_VERSIONS = [
   "0.73",
   "0.76",
   "0.95",
+  "0.99.4-961224",
   "1.0-961225",
   "1.0-971002",
   "1.0-971003",
@@ -70,8 +71,12 @@ ARCHIVED_VERSIONS = [
 
 BUILD_ARTIFACTS = [
   "Makefile",
-  "config.status",
+  "ext/Makefile",
+  "ext/extmk.rb",
+  "config.cache",
   "config.h",
+  "config.log",
+  "config.status",
   "ruby",
   /\.o$/,
 ]
@@ -120,16 +125,22 @@ task "sync" do
 
     convert_varargs_to_stdarg("#{tmpdir}/ruby")
     add_error_prototype("#{tmpdir}/ruby")
-    rename_undocumented_file_member("#{tmpdir}/ruby")
+    fix_stdio_pending("#{tmpdir}/ruby")
     fix_struct_va_end("#{tmpdir}/ruby")
     include_time_header("#{tmpdir}/ruby")
     deduplicate_vars("#{tmpdir}/ruby")
     fix_errno_decl("#{tmpdir}/ruby")
     use_gdbm_compat("#{tmpdir}/ruby")
     fix_dbmcc("#{tmpdir}/ruby")
+    fix_ldshared("#{tmpdir}/ruby")
     use_crypt("#{tmpdir}/ruby")
     fix_dirent_conf("#{tmpdir}/ruby")
     fix_alloca_prototype("#{tmpdir}/ruby")
+    fix_re_match_2("#{tmpdir}/ruby")
+    fix_renamed_cons("#{tmpdir}/ruby")
+    fix_missing_ext_makefile("#{tmpdir}/ruby")
+    fix_pow_detection("#{tmpdir}/ruby")
+    fix_sys_nerr("#{tmpdir}/ruby")
 
     ours = Dir.glob("**/*", base: "#{tmpdir}/ruby").select { |path|
       BUILD_ARTIFACTS.none? { |artifact| artifact === path }
@@ -152,13 +163,13 @@ end
 
 task "configure" => "sync" do
   Dir.chdir("build/ruby") do
-    sh "CC='gcc -m32 -g -O0' setarch i386 ./configure --prefix=#{Dir.pwd}/build/ruby"
+    sh "CC='gcc -m32 -g -O0' LDSHARED='gcc -m32 -shared' setarch i386 ./configure --prefix=#{Dir.pwd}/build/ruby"
   end
 end
 
 task "build" => "sync" do
   Dir.chdir("build/ruby") do
-    sh "CC='gcc -m32 -g -O0' setarch i386 make"
+    sh "CC='gcc -m32 -g -O0' LDSHARED='gcc -m32 -shared' setarch i386 make"
   end
 end
 
@@ -238,11 +249,18 @@ def add_error_prototype(path)
   end
 end
 
-def rename_undocumented_file_member(path)
+def fix_stdio_pending(path)
   rewrite_file("#{path}/io.c") do |src|
-    src
-      .gsub(/->_gptr/, "->_IO_read_ptr")
-      .gsub(/->_egptr/, "->_IO_read_end")
+    if src.include?("ifdef _STDIO_USES_IOSTREAM")
+      src
+        .gsub("ifdef _STDIO_USES_IOSTREAM", "if 1")
+        .gsub("ifdef _IO_fpos_t", "if 1")
+        .gsub("ifdef _other_gbase", "if 1")
+    else
+      src
+        .gsub(/->_gptr/, "->_IO_read_ptr")
+        .gsub(/->_egptr/, "->_IO_read_end")
+    end
   end
 end
 
@@ -268,6 +286,15 @@ def deduplicate_vars(path)
   rewrite_file("#{path}/range.c") do |src|
     src
       .gsub("\nVALUE M_Comparable;", "\nextern VALUE M_Comparable;")
+      .gsub("\nVALUE mComparable;", "\nextern VALUE mComparable;")
+  end
+  rewrite_file("#{path}/object.c") do |src|
+    src
+      .gsub("\nVALUE cFixnum;", "\nextern VALUE cFixnum;")
+  end
+  rewrite_file("#{path}/env.h") do |src|
+    src
+      .gsub(/^(struct SCOPE \{[^}]*\} \*the_scope;)/, "extern \\1")
   end
 end
 
@@ -294,9 +321,15 @@ def fix_dbmcc(path)
   end
 end
 
+def fix_ldshared(path)
+  rewrite_file("#{path}/ext/extmk.rb.in") do |src|
+    src.gsub("LDSHARED = @LDSHARED@", "LDSHARED = @CC@ -shared")
+  end
+end
+
 def use_crypt(path)
   rewrite_file("#{path}/configure.in") do |src|
-    next src if src.include?("-lcrypt")
+    next src if src.include?("-lcrypt") || src.include?("AC_CHECK_LIB(crypt")
     last_have_library = src.scan(%r{AC_HAVE_LIBRARY\(.*\)\n}).last
     src.sub(last_have_library, last_have_library + "AC_CHECK_LIB(crypt, [LIBS=\"$LIBS -lcrypt\"])\n")
   end
@@ -351,6 +384,39 @@ def fix_alloca_prototype(path)
   end
   rewrite_file("#{path}/gnuglob.c") do |src|
     src.gsub("char *alloca ();", "#include <alloca.h>")
+  end
+end
+
+def fix_re_match_2(path)
+  rewrite_file("#{path}/regex.c") do |src|
+    src.gsub(/re_match_2 \((.*?), size\)/, "re_match_2 (\\1)")
+  end
+end
+
+def fix_renamed_cons(path)
+  if File.exist?("#{path}/assoc.c") && !File.exist?("#{path}/cons.c")
+    rewrite_file("#{path}/Makefile.in") do |src|
+      src.gsub("cons.o", "assoc.o").gsub("cons.c", "assoc.c")
+    end
+  end
+end
+
+def fix_missing_ext_makefile(path)
+  if File.binread("#{path}/configure").include?("ext/Makefile") && !File.exist?("#{path}/ext/Makefile.in")
+    FileUtils.mkdir_p("#{path}/ext")
+    File.binwrite("#{path}/ext/Makefile.in", "all:\n")
+  end
+end
+
+def fix_pow_detection(path)
+  rewrite_file("#{path}/configure") do |src|
+    src.gsub("pow()", "pow(1.0, 1.0)")
+  end
+end
+
+def fix_sys_nerr(path)
+  rewrite_file("#{path}/error.c") do |src|
+    src.gsub("\nextern int sys_nerr;", "\n#define sys_nerr 256")
   end
 end
 
