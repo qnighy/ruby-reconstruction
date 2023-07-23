@@ -71,6 +71,7 @@ ARCHIVED_VERSIONS = [
 BUILD_ARTIFACTS = [
   "Makefile",
   "config.status",
+  "ruby",
   /\.o$/,
 ]
 
@@ -86,7 +87,14 @@ def checkout(version)
   if ARCHIVED_VERSIONS.include?(version)
     rm_rf "ruby"
     mkdir_p "ruby"
-    sh "tar -xzf archives/ruby-#{version}.tar.gz -C ruby --strip-components 1"
+    components = \
+      if `tar -tzf archives/ruby-#{version}.tar.gz`.include?("./ruby")
+        # "." is also part of the components
+        2
+      else
+        1
+      end
+    sh "tar -xzf archives/ruby-#{version}.tar.gz -C ruby --strip-components #{components}"
   else
     raise "TODO: non-archived checkout"
   end
@@ -118,6 +126,7 @@ task "sync" do
     fix_errno_decl("#{tmpdir}/ruby")
     use_gdbm_compat("#{tmpdir}/ruby")
     use_crypt("#{tmpdir}/ruby")
+    fix_dirent_conf("#{tmpdir}/ruby")
 
     ours = Dir.glob("**/*", base: "#{tmpdir}/ruby").select { |path|
       BUILD_ARTIFACTS.none? { |artifact| artifact === path }
@@ -133,8 +142,7 @@ task "sync" do
       end
     end
     (theirs - ours).each do |path|
-      # rm_rf "build/ruby/#{path}"
-      $stderr.puts "TODO: remove #{path}"
+      rm_rf "build/ruby/#{path}"
     end
   end
 end
@@ -315,6 +323,16 @@ def use_crypt(path)
       fi
     End
     src2
+  end
+end
+
+def fix_dirent_conf(path)
+  conf_src = File.binread("#{path}/configure.in")
+  # HAVE_DIRENT_H would be correctly generated
+  return if conf_src.match?(/AC_HAVE_HEADERS\([^)]*?dirent.h\)/)
+
+  rewrite_file("#{path}/gnuglob.c") do |src|
+    src.gsub("#if defined (HAVE_DIRENT_H)", "#if defined (DIRENT)")
   end
 end
 
