@@ -71,6 +71,7 @@ ARCHIVED_VERSIONS = [
 BUILD_ARTIFACTS = [
   "Makefile",
   "config.status",
+  "config.h",
   "ruby",
   /\.o$/,
 ]
@@ -125,8 +126,10 @@ task "sync" do
     deduplicate_vars("#{tmpdir}/ruby")
     fix_errno_decl("#{tmpdir}/ruby")
     use_gdbm_compat("#{tmpdir}/ruby")
+    fix_dbmcc("#{tmpdir}/ruby")
     use_crypt("#{tmpdir}/ruby")
     fix_dirent_conf("#{tmpdir}/ruby")
+    fix_alloca_prototype("#{tmpdir}/ruby")
 
     ours = Dir.glob("**/*", base: "#{tmpdir}/ruby").select { |path|
       BUILD_ARTIFACTS.none? { |artifact| artifact === path }
@@ -285,6 +288,12 @@ def use_gdbm_compat(path)
   end
 end
 
+def fix_dbmcc(path)
+  rewrite_file("#{path}/Makefile.in") do |src|
+    src.gsub("DBMCC = cc", "DBMCC = @CC@")
+  end
+end
+
 def use_crypt(path)
   rewrite_file("#{path}/configure.in") do |src|
     next src if src.include?("-lcrypt")
@@ -336,7 +345,18 @@ def fix_dirent_conf(path)
   end
 end
 
+def fix_alloca_prototype(path)
+  rewrite_file("#{path}/glob.c") do |src|
+    src.gsub("char *alloca ();", "#include <alloca.h>")
+  end
+  rewrite_file("#{path}/gnuglob.c") do |src|
+    src.gsub("char *alloca ();", "#include <alloca.h>")
+  end
+end
+
 def rewrite_file(path)
+  return unless File.exist?(path)
+
   src = -File.binread(path)
   src2 = yield(src)
   File.binwrite(path, src2) if src != src2
