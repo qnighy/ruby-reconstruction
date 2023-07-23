@@ -71,6 +71,7 @@ ARCHIVED_VERSIONS = [
 BUILD_ARTIFACTS = [
   "Makefile",
   "config.status",
+  /\.o$/,
 ]
 
 directory "archives"
@@ -107,8 +108,16 @@ task "sync" do
 
   Dir.mktmpdir do |tmpdir|
     cp_r "ruby", tmpdir
-    # TODO: do some transformation
+
     convert_varargs_to_stdarg("#{tmpdir}/ruby")
+    add_error_prototype("#{tmpdir}/ruby")
+    rename_undocumented_file_member("#{tmpdir}/ruby")
+    fix_struct_va_end("#{tmpdir}/ruby")
+    include_time_header("#{tmpdir}/ruby")
+    deduplicate_vars("#{tmpdir}/ruby")
+    fix_errno_decl("#{tmpdir}/ruby")
+    use_gdbm_compat("#{tmpdir}/ruby")
+    use_crypt("#{tmpdir}/ruby")
 
     ours = Dir.glob("**/*", base: "#{tmpdir}/ruby").select { |path|
       BUILD_ARTIFACTS.none? { |artifact| artifact === path }
@@ -133,6 +142,12 @@ end
 task "configure" => "sync" do
   Dir.chdir("build/ruby") do
     sh "CC='gcc -m32 -g -O0' setarch i386 ./configure --prefix=#{Dir.pwd}/build/ruby"
+  end
+end
+
+task "build" => "sync" do
+  Dir.chdir("build/ruby") do
+    sh "CC='gcc -m32 -g -O0' setarch i386 make"
   end
 end
 
@@ -196,4 +211,115 @@ def convert_varargs_to_stdarg(dir)
     h.gsub!(/^\#ifdef __GNUC__\nvolatile voidfn/, "\#if 0\nvolatile voidfn")
     File.write(fn, h)
   }
+end
+
+def add_error_prototype(path)
+  rewrite_file("#{path}/error.c") do |src|
+    error_pos = src.index("\nvoid\nError(char *fmt, ...)") || src.index("\nError(char *fmt, ...)")
+    yyerror_pos = src.index("\nvoid\nyyerror(msg)") || src.index("\nint\nyyerror(msg)") || src.index("\nyyerror(msg)")
+
+    return src unless error_pos && yyerror_pos
+    return src if error_pos < yyerror_pos
+
+    src2 = +src
+    src2[yyerror_pos, 0] = "\nvoid Error(char *fmt, ...);\n"
+    src2
+  end
+end
+
+def rename_undocumented_file_member(path)
+  rewrite_file("#{path}/io.c") do |src|
+    src
+      .gsub(/->_gptr/, "->_IO_read_ptr")
+      .gsub(/->_egptr/, "->_IO_read_end")
+  end
+end
+
+def fix_struct_va_end(path)
+  rewrite_file("#{path}/struct.c") do |src|
+    src
+      .gsub("va_end(vargs)", "va_end(args)")
+  end
+end
+
+def include_time_header(path)
+  rewrite_file("#{path}/time.c") do |src|
+    return src if src.include?("#include <time.h>")
+
+    pos = %r{#include <sys/time.h>\n}.match(src).end(0)
+    src2 = +src
+    src2[pos, 0] = "#include <time.h>\n"
+    src2
+  end
+end
+
+def deduplicate_vars(path)
+  rewrite_file("#{path}/range.c") do |src|
+    src
+      .gsub("\nVALUE M_Comparable;", "\nextern VALUE M_Comparable;")
+  end
+end
+
+def fix_errno_decl(path)
+  rewrite_file("#{path}/error.c") do |src|
+    return if src.include?("#include \"errno.h\";") || src.include?("#include <errno.h>;")
+
+    "#include <errno.h>;\n" + src
+  end
+end
+
+def use_gdbm_compat(path)
+  rewrite_file("#{path}/configure") do |src|
+    src.gsub("-ldbm", "-lgdbm_compat")
+  end
+  rewrite_file("#{path}/configure.in") do |src|
+    src.gsub("-ldbm", "-lgdbm_compat")
+  end
+end
+
+def use_crypt(path)
+  rewrite_file("#{path}/configure.in") do |src|
+    next src if src.include?("-lcrypt")
+    last_have_library = src.scan(%r{AC_HAVE_LIBRARY\(.*\)\n}).last
+    src.sub(last_have_library, last_have_library + "AC_CHECK_LIB(crypt, [LIBS=\"$LIBS -lcrypt\"])\n")
+  end
+  rewrite_file("#{path}/configure") do |src|
+    next src if src.include?("-lcrypt")
+    last_libs_line_pos = src.rindex("LIBS=\"\$LIBS ")
+    last_libs_section_pos = src.index(/^fi$/, last_libs_line_pos) + 3
+
+    src2 = +src
+    src2[last_libs_section_pos, 0] = <<~End
+
+      LIBS_save="${LIBS}"
+      LIBS="${LIBS} -lcrypt"
+      have_lib=""
+      echo checking for -lcrypt
+      cat > conftest.c <<EOF
+      #include "confdefs.h"
+
+      int main() { exit(0); }
+      int t() { main(); }
+      EOF
+      if eval $compile; then
+        rm -rf conftest*
+        have_lib="1"
+
+      fi
+      rm -f conftest*
+      LIBS="${LIBS_save}"
+      if test -n "${have_lib}"; then
+          :; LIBS="$LIBS -lcrypt"
+      else
+          :;
+      fi
+    End
+    src2
+  end
+end
+
+def rewrite_file(path)
+  src = -File.binread(path)
+  src2 = yield(src)
+  File.binwrite(path, src2) if src != src2
 end
