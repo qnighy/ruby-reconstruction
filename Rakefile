@@ -68,6 +68,11 @@ ARCHIVED_VERSIONS = [
   "1.0-971225",
 ]
 
+BUILD_ARTIFACTS = [
+  "Makefile",
+  "config.status",
+]
+
 directory "archives"
 
 RUBY_ARCHIVES.each do |archive|
@@ -92,5 +97,40 @@ ARCHIVED_VERSIONS.each do |version|
     task version => "archives/ruby-#{version}.tar.gz" do
       checkout(version)
     end
+  end
+end
+
+task "sync" do
+  require "tmpdir"
+
+  mkdir_p "build/ruby"
+
+  Dir.mktmpdir do |tmpdir|
+    cp_r "ruby", tmpdir
+    # TODO: do some transformation
+
+    ours = Dir.glob("**/*", base: "#{tmpdir}/ruby").select { |path|
+      BUILD_ARTIFACTS.none? { |artifact| artifact === path }
+    }
+    theirs = Dir.glob("**/*", base: "build/ruby").select { |path|
+      BUILD_ARTIFACTS.none? { |artifact| artifact === path }
+    }
+    ours.each do |path|
+      if File.directory?("#{tmpdir}/ruby/#{path}")
+        mkdir_p "build/ruby/#{path}" unless File.exist?("build/ruby/#{path}")
+      else
+        cp "#{tmpdir}/ruby/#{path}", "build/ruby/#{path}" if !File.exist?("build/ruby/#{path}") || File.read("#{tmpdir}/ruby/#{path}") != File.read("build/ruby/#{path}")
+      end
+    end
+    (theirs - ours).each do |path|
+      # rm_rf "build/ruby/#{path}"
+      $stderr.puts "TODO: remove #{path}"
+    end
+  end
+end
+
+task "configure" => "sync" do
+  Dir.chdir("build/ruby") do
+    sh "CC='gcc -m32 -g -O0' setarch i386 ./configure --prefix=#{Dir.pwd}/build/ruby"
   end
 end
