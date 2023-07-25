@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "./patches/convert_varargs_to_stdarg"
 require_relative "./patches/add_error_prototype"
 require_relative "./patches/fix_stdio_pending"
@@ -11,7 +13,7 @@ require_relative "./patches/fix_ldshared"
 require_relative "./patches/use_crypt"
 require_relative "./patches/fix_dirent_conf"
 require_relative "./patches/fix_alloca_prototype"
-require_relative "./patches/fix_re_match_2"
+# require_relative "./patches/fix_re_match_2"
 require_relative "./patches/fix_renamed_cons"
 require_relative "./patches/fix_missing_ext_makefile"
 require_relative "./patches/fix_pow_detection"
